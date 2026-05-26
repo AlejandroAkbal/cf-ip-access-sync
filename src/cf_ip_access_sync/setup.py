@@ -27,7 +27,6 @@ class SetupAnswers:
     token: str
     ip_versions: list[str]
     interval_seconds: int
-    install_agent: bool
 
 
 InputFunc = Callable[[str], str]
@@ -108,12 +107,6 @@ def collect_setup_answers(
         input_func=input_func,
         output=output,
     )
-    selected_install_agent = False if no_agent else _prompt_yes_no(
-        "Install automatic background sync",
-        default=True,
-        input_func=input_func,
-        output=output,
-    )
     ip_versions = ["ipv4", "ipv6"] if selected_ipv6 else ["ipv4"]
     return SetupAnswers(
         profile=selected_profile,
@@ -121,7 +114,6 @@ def collect_setup_answers(
         token=token,
         ip_versions=ip_versions,
         interval_seconds=selected_interval,
-        install_agent=selected_install_agent,
     )
 
 
@@ -182,7 +174,13 @@ def run_setup(
         print("dry run failed; LaunchAgent was not installed", file=output)
         return dry_run_result
 
-    if answers.install_agent:
+    install_agent = False if no_agent else _prompt_yes_no(
+        "Install automatic background sync",
+        default=True,
+        input_func=input_func,
+        output=output,
+    )
+    if install_agent:
         path = install_agent_func(config.profile, config.interval_seconds)
         print(f"installed profile={config.profile} plist={path} interval={config.interval_seconds}", file=output)
     else:

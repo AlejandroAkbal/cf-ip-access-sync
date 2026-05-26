@@ -59,10 +59,14 @@ def sync_rules(config: ProfileConfig, client, current_ips: dict[str, str], dry_r
         target = target_for_family(family)
         managed_rules = filter_managed_rules(all_rules, config.profile, family)
         keeper = _choose_keeper(managed_rules, target, current_ip)
+        managed_rule_ids = {rule.id for rule in managed_rules}
+        existing_unmanaged = [
+            rule for rule in filter_matching_rules(all_rules, target, current_ip) if rule.id not in managed_rule_ids
+        ]
         notes = build_rule_notes(config.profile, family)
 
-        if keeper is None:
-            existing = _choose_keeper(filter_matching_rules(all_rules, target, current_ip), target, current_ip)
+        if existing_unmanaged and (keeper is None or not _rule_matches(keeper, target, current_ip)):
+            existing = _choose_keeper(existing_unmanaged, target, current_ip)
             if existing is not None:
                 results.append(
                     SyncResult(
@@ -74,6 +78,8 @@ def sync_rules(config: ProfileConfig, client, current_ips: dict[str, str], dry_r
                     )
                 )
                 continue
+
+        if keeper is None:
             if dry_run:
                 results.append(SyncResult(family=family, current_ip=current_ip, action="dry_run", detail="would_create"))
             else:

@@ -170,17 +170,18 @@ def _status(args: argparse.Namespace) -> int:
     rules = client.list_access_rules(config.account_id)
     for family in ("ipv4", "ipv6"):
         managed = filter_managed_rules(rules, config.profile, family)
+        managed_rule_ids = {rule.id for rule in managed}
         target = "ip6" if family == "ipv6" else "ip"
         if not managed:
             print(f"managed_{family}: none")
-            for rule in filter_matching_rules(rules, target, detected.get(family, "")):
-                if rule not in managed:
-                    note = f" notes={_format_detail_value(rule.notes)}" if rule.notes else ""
-                    print(f"unmanaged_{family}_allow_for_current_ip: id={rule.id} value={rule.value}{note}")
-            continue
-        for rule in managed:
-            matches = rule.mode == "whitelist" and rule.target == target and rule.value == detected.get(family)
-            print(f"managed_{family}: id={rule.id} value={rule.value} matches_current={str(matches).lower()}")
+        else:
+            for rule in managed:
+                matches = rule.mode == "whitelist" and rule.target == target and rule.value == detected.get(family)
+                print(f"managed_{family}: id={rule.id} value={rule.value} matches_current={str(matches).lower()}")
+        for rule in filter_matching_rules(rules, target, detected.get(family, "")):
+            if rule.id not in managed_rule_ids:
+                note = f" notes={_format_detail_value(rule.notes)}" if rule.notes else ""
+                print(f"unmanaged_{family}_allow_for_current_ip: id={rule.id} value={rule.value}{note}")
     return 0
 
 

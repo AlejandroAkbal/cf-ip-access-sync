@@ -17,6 +17,12 @@ class FakeCloudflareClient:
     def list_access_rules(self, account_id, notes=None, page=1, per_page=50):
         return [
             AccessRule(
+                id="managed-stale",
+                mode="whitelist",
+                configuration={"target": "ip", "value": "192.0.2.30"},
+                notes="cf-ip-access-sync profile=laptop managed=true family=ipv4",
+            ),
+            AccessRule(
                 id="manual-current",
                 mode="whitelist",
                 configuration={"target": "ip", "value": EXAMPLE_CURRENT_IP},
@@ -43,7 +49,7 @@ def test_status_reports_unmanaged_allow_rule_for_current_ip(monkeypatch, capsys)
 
     assert result == 0
     output = capsys.readouterr().out
-    assert "managed_ipv4: none" in output
+    assert "managed_ipv4: id=managed-stale value=192.0.2.30 matches_current=false" in output
     assert f"unmanaged_ipv4_allow_for_current_ip: id=manual-current value={EXAMPLE_CURRENT_IP} notes=Me" in output
 
 

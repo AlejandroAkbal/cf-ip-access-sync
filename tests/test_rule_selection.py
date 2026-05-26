@@ -87,6 +87,26 @@ def test_sync_does_not_create_duplicate_when_unmanaged_allow_rule_already_covers
     assert results[0].detail == "existing_unmanaged_allow_rule"
 
 
+def test_sync_does_not_update_stale_managed_rule_when_unmanaged_allow_rule_covers_current_ip():
+    managed_stale = rule(
+        "managed-stale",
+        "cf-ip-access-sync profile=work managed=true family=ipv4",
+        value=EXAMPLE_OLD_IP,
+    )
+    manual_current = rule("manual-current", "Me", value=EXAMPLE_CURRENT_IP)
+    client = FakeCloudflareClient([managed_stale, manual_current])
+
+    results = sync_rules(config(), client, {"ipv4": EXAMPLE_CURRENT_IP})
+
+    assert client.created == []
+    assert client.updated == []
+    assert client.deleted == []
+    assert len(results) == 1
+    assert results[0].action == "covered_by_existing"
+    assert results[0].rule_id == "manual-current"
+    assert results[0].detail == "existing_unmanaged_allow_rule"
+
+
 def test_rule_notes_prefer_local_hostname_over_reverse_dns(monkeypatch):
     monkeypatch.setattr("cf_ip_access_sync.sync.socket.gethostname", lambda: "example-mac.local")
     monkeypatch.setattr(

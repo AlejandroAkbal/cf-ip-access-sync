@@ -53,7 +53,6 @@ def test_collect_setup_answers_uses_safe_defaults_and_prints_token_guidance():
         token="secret-token",
         ip_versions=["ipv4"],
         interval_seconds=DEFAULT_SETUP_INTERVAL_SECONDS,
-        install_agent=True,
     )
     assert "cf-ip-access-sync work" in output.getvalue()
     assert "Open https://dash.cloudflare.com" in output.getvalue()
@@ -93,7 +92,6 @@ def test_build_profile_config_preserves_ipv6_and_setup_interval():
             token="secret-token",
             ip_versions=["ipv4", "ipv6"],
             interval_seconds=900,
-            install_agent=False,
         )
     )
 
@@ -152,6 +150,61 @@ def test_run_setup_skips_agent_install_when_dry_run_fails():
         ("dry_run", "work"),
     ]
     assert "dry run failed" in output.getvalue()
+
+
+def test_run_setup_asks_to_install_agent_after_successful_dry_run():
+    events = []
+    answers = iter(["", "abc123def456", "", "", "n"])
+    output = io.StringIO()
+
+    def input_func(prompt):
+        events.append(("prompt", prompt))
+        return next(answers)
+
+    def save_config(config):
+        events.append(("save_config", config.profile))
+        return "/tmp/config.json"
+
+    def store_token(account_id, profile, token):
+        events.append(("store_token", profile))
+
+    def status(profile):
+        events.append(("status", profile))
+        return 0
+
+    def dry_run(profile):
+        events.append(("dry_run", profile))
+        return 0
+
+    def install_agent(profile, interval):
+        events.append(("install_agent", profile, interval))
+        return "/tmp/agent.plist"
+
+    result = run_setup(
+        profile=None,
+        account_id=None,
+        interval=None,
+        ipv6=False,
+        no_agent=False,
+        stdin=type("TTY", (), {"isatty": lambda self: True})(),
+        input_func=input_func,
+        secret_func=lambda _prompt: "secret-token",
+        output=output,
+        save_config_func=save_config,
+        store_token_func=store_token,
+        status_func=status,
+        dry_run_func=dry_run,
+        install_agent_func=install_agent,
+    )
+
+    install_prompt_index = next(
+        index for index, event in enumerate(events) if event[0] == "prompt" and "Install automatic background sync" in event[1]
+    )
+    dry_run_index = events.index(("dry_run", "work"))
+    assert result == 0
+    assert install_prompt_index > dry_run_index
+    assert all(event[0] != "install_agent" for event in events)
+    assert "LaunchAgent install skipped" in output.getvalue()
 
 
 def test_setup_parser_accepts_prefill_options():
