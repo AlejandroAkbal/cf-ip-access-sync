@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fcntl
+import ipaddress
 from pathlib import Path
 import socket
 from typing import Iterable, Iterator
@@ -37,15 +38,19 @@ def filter_managed_rules(rules: Iterable[AccessRule], profile: str, family: str)
     return [rule for rule in rules if marker in (rule.notes or "")]
 
 
+def filter_matching_rules(rules: Iterable[AccessRule], target: str, value: str, mode: str = MODE) -> list[AccessRule]:
+    return [rule for rule in rules if _rule_matches(rule, target, value, mode)]
+
+
 def build_rule_notes(profile: str, family: str, now: datetime | None = None, host: str | None = None) -> str:
     timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0)
     updated_at = timestamp.isoformat().replace("+00:00", "Z")
-    hostname = (host or socket.getfqdn() or socket.gethostname()).replace(" ", "-")
+    hostname = _select_note_hostname(host)
     return f"{managed_marker(profile, family)} host={hostname} updated_at={updated_at}"
 
 
 def sync_rules(config: ProfileConfig, client, current_ips: dict[str, str], dry_run: bool = False) -> list[SyncResult]:
-    all_rules = client.list_access_rules(config.account_id, notes=config.managed_note_marker)
+    all_rules = client.list_access_rules(config.account_id)
     results: list[SyncResult] = []
     for family in config.ip_versions:
         if family not in current_ips:
@@ -57,6 +62,18 @@ def sync_rules(config: ProfileConfig, client, current_ips: dict[str, str], dry_r
         notes = build_rule_notes(config.profile, family)
 
         if keeper is None:
+            existing = _choose_keeper(filter_matching_rules(all_rules, target, current_ip), target, current_ip)
+            if existing is not None:
+                results.append(
+                    SyncResult(
+                        family=family,
+                        current_ip=current_ip,
+                        action="covered_by_existing",
+                        rule_id=existing.id,
+                        detail="existing_unmanaged_allow_rule",
+                    )
+                )
+                continue
             if dry_run:
                 results.append(SyncResult(family=family, current_ip=current_ip, action="dry_run", detail="would_create"))
             else:
@@ -64,7 +81,21 @@ def sync_rules(config: ProfileConfig, client, current_ips: dict[str, str], dry_r
                 results.append(SyncResult(family=family, current_ip=current_ip, action="created", rule_id=created.id))
             continue
 
-        if _rule_matches(keeper, target, current_ip):
+        if _rule_matches(keeper, target, current_ip) and _rule_notes_need_refresh(keeper.notes):
+            if dry_run:
+                results.append(
+                    SyncResult(
+                        family=family,
+                        current_ip=current_ip,
+                        action="dry_run",
+                        rule_id=keeper.id,
+                        detail="would_update_notes",
+                    )
+                )
+            else:
+                updated = client.update_access_rule(config.account_id, keeper.id, target, current_ip, MODE, notes)
+                results.append(SyncResult(family=family, current_ip=current_ip, action="notes_updated", rule_id=updated.id))
+        elif _rule_matches(keeper, target, current_ip):
             results.append(SyncResult(family=family, current_ip=current_ip, action="unchanged", rule_id=keeper.id))
         elif dry_run:
             results.append(
@@ -106,8 +137,8 @@ def sync_rules(config: ProfileConfig, client, current_ips: dict[str, str], dry_r
     return results
 
 
-def _rule_matches(rule: AccessRule, target: str, value: str) -> bool:
-    return rule.mode == MODE and rule.target == target and rule.value == value
+def _rule_matches(rule: AccessRule, target: str, value: str, mode: str = MODE) -> bool:
+    return rule.mode == mode and rule.target == target and rule.value == value
 
 
 def _choose_keeper(rules: list[AccessRule], target: str, current_ip: str) -> AccessRule | None:
@@ -128,6 +159,43 @@ def _choose_keeper(rules: list[AccessRule], target: str, current_ip: str) -> Acc
 
 def _rule_timestamp(rule: AccessRule) -> str:
     return rule.modified_on or rule.created_on or ""
+
+
+def _rule_notes_need_refresh(notes: str) -> bool:
+    host_value = _note_host_value(notes)
+    return host_value is not None and _normalize_note_hostname(host_value) is None
+
+
+def _note_host_value(notes: str) -> str | None:
+    for part in notes.split():
+        if part.startswith("host="):
+            return part.removeprefix("host=")
+    return None
+
+
+def _select_note_hostname(host: str | None = None) -> str:
+    candidates = [host] if host is not None else [socket.gethostname(), socket.getfqdn()]
+    for candidate in candidates:
+        normalized = _normalize_note_hostname(candidate)
+        if normalized:
+            return normalized
+    return "unknown"
+
+
+def _normalize_note_hostname(host: str | None) -> str | None:
+    if not host:
+        return None
+    normalized = "-".join(host.strip().rstrip(".").split())
+    if not normalized:
+        return None
+    lower = normalized.lower()
+    if lower.endswith(".ip6.arpa") or lower.endswith(".in-addr.arpa"):
+        return None
+    try:
+        ipaddress.ip_address(normalized)
+    except ValueError:
+        return normalized
+    return None
 
 
 @contextmanager

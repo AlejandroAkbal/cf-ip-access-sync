@@ -9,7 +9,7 @@ from typing import Any
 
 
 APP_NAME = "cf-ip-access-sync"
-DEFAULT_INTERVAL_SECONDS = 300
+DEFAULT_INTERVAL_SECONDS = 900
 DEFAULT_LOG_LEVEL = "INFO"
 VALID_FAMILIES = {"ipv4", "ipv6"}
 PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")

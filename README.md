@@ -33,18 +33,6 @@ cf-ip-access-sync profile=work managed=true family=ipv4
 
 It will not delete manually created rules or rules that merely contain `cf-ip-access-sync` without the exact marker.
 
-## Cloudflare Links You Need
-
-- Cloudflare dashboard: <https://dash.cloudflare.com>
-- Create user API tokens: <https://dash.cloudflare.com/profile/api-tokens>
-- Create account API tokens: <https://dash.cloudflare.com/?to=/:account/api-tokens>
-- Cloudflare guide: create API tokens: <https://developers.cloudflare.com/fundamentals/api/get-started/create-token/>
-- Cloudflare guide: account-owned tokens: <https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/>
-- Cloudflare guide: find your Account ID: <https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/>
-- Cloudflare API reference: IP Access Rules: <https://developers.cloudflare.com/api/resources/firewall/subresources/access_rules/>
-
-Cloudflare's Access Rules API documents the `GET`, `POST`, `PATCH`, and `DELETE` endpoints for `/firewall/access_rules/rules`, plus `ip`, `ip6`, and `whitelist` rule fields.
-
 ## Quick Start
 
 ### 1. Install the CLI
@@ -72,89 +60,58 @@ Check that the command is available:
 cf-ip-access-sync --help
 ```
 
-### 2. Get Your Cloudflare Account ID
-
-Open Cloudflare's account ID guide:
-
-<https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/>
-
-Fast path in the dashboard:
-
-1. Open <https://dash.cloudflare.com>.
-2. Go to the account home page.
-3. Copy the Account ID.
-
-Use the Account ID, not a Zone ID.
-
-### 3. Create the Cloudflare Token
+### 2. Create the Cloudflare Token
 
 Open the API Tokens page:
 
 <https://dash.cloudflare.com/profile/api-tokens>
 
-Create a custom token with this permission:
+Create a custom token with these values:
 
 ```text
-Account -> Account Firewall Access Rules -> Edit
+Token name: cf-ip-access-sync work
+Permission: Account -> Account Firewall Access Rules -> Edit
+Account Resources: Include -> <your Cloudflare account>
 ```
-
-In Cloudflare API docs, this permission is named `Account Firewall Access Rules Write`.
-
-Scope it to the Cloudflare account you copied above.
-
-You can use a user API token or an account-owned token. Account-owned tokens are cleaner for durable automation, but Cloudflare requires account admin permissions to create them.
 
 Copy the token secret once. Cloudflare only shows it at creation time.
 
-### 4. Configure This Tool
+You also need the Cloudflare Account ID for the same account. Use the Account ID, not a Zone ID. If you do not know where it is, see Cloudflare's account ID guide:
 
-This stores non-secret config in:
+<https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/>
+
+### 3. Run Setup
+
+Run:
+
+```bash
+cf-ip-access-sync setup
+```
+
+Setup prompts for the Account ID and token, stores the token in macOS Keychain, saves local config, shows current status, runs a dry run, and then asks before installing automatic background sync.
+
+Useful defaults:
 
 ```text
-~/Library/Application Support/cf-ip-access-sync/config.json
+profile: work
+ip family: IPv4
+sync interval: 900 seconds
+LaunchAgent: install after successful dry run
 ```
 
-The token is stored in macOS Keychain under service `cf-ip-access-sync:work`.
+You can prefill common values:
 
 ```bash
-printf '%s' '<cloudflare_api_token>' | cf-ip-access-sync configure \
-  --profile work \
-  --account-id '<cloudflare_account_id>' \
-  --token-stdin
+cf-ip-access-sync setup --profile work --account-id '<cloudflare_account_id>'
 ```
 
-Do not paste the token directly into your shell history as a bare command argument. Pipe it through stdin as shown above.
-
-### 5. Inspect Without Changing Cloudflare
-
-```bash
-cf-ip-access-sync status --profile work
-cf-ip-access-sync sync --profile work --dry-run
-```
-
-Confirm the dry run shows the action you expect.
-
-### 6. Sync Once
-
-```bash
-cf-ip-access-sync sync --profile work
-```
-
-Typical output:
+Typical dry-run output:
 
 ```text
-family=ipv4 current_ip=<your_public_ipv4> action=created rule_id=<cloudflare_rule_id>
+family=ipv4 current_ip=<your_public_ipv4> action=dry_run detail=would_create
 ```
 
-Later, when your IP changes, the same managed rule is updated with `PATCH` instead of creating a new primary rule.
-
-### 7. Install Automatic Sync
-
-```bash
-cf-ip-access-sync install-agent --profile work --interval 300
-```
-
-This writes:
+When setup installs automatic sync, it writes:
 
 ```text
 ~/Library/LaunchAgents/com.cf-ip-access-sync.work.plist
@@ -167,7 +124,22 @@ Logs go to:
 ~/Library/Logs/cf-ip-access-sync/work.err.log
 ```
 
-The LaunchAgent uses `RunAtLoad = true` and `StartInterval = 300`, so it runs at login and then every five minutes while your user session is active.
+The LaunchAgent uses `RunAtLoad = true`. With the setup default, `StartInterval = 900`, so it runs at login and then every fifteen minutes while your user session is active.
+
+## Scripted Setup
+
+For non-interactive setup, keep using `configure --token-stdin`. Do not paste the token directly into your shell history as a bare command argument.
+
+```bash
+printf '%s' '<cloudflare_api_token>' | cf-ip-access-sync configure \
+  --profile work \
+  --account-id '<cloudflare_account_id>' \
+  --interval 900 \
+  --token-stdin
+
+cf-ip-access-sync sync --profile work --dry-run
+cf-ip-access-sync install-agent --profile work --interval 900
+```
 
 ## Daily Use
 
@@ -188,6 +160,14 @@ Preview a manual sync:
 ```bash
 cf-ip-access-sync sync --profile work --dry-run
 ```
+
+Test the installed LaunchAgent command without changing Cloudflare:
+
+```bash
+cf-ip-access-sync test-agent --profile work
+```
+
+This reads the installed plist, runs its exact `ProgramArguments` with `--dry-run`, and uses a sparse launchd-like environment instead of your interactive shell environment. It is the best local check that automatic sync can find the executable, config, Keychain token, and network access.
 
 Enable IPv6 for one run:
 
@@ -292,6 +272,16 @@ Check:
 
 Token docs: <https://developers.cloudflare.com/fundamentals/api/get-started/create-token/>
 
+### `firewallaccessrules.api.duplicate_of_existing`
+
+Cloudflare already has an IP Access Rule for the same IP address. Check:
+
+```bash
+cf-ip-access-sync status --profile work
+```
+
+If the output shows `unmanaged_ipv4_allow_for_current_ip`, the current IP is already allowed by a rule that does not contain this tool's managed marker. You can leave it as-is, delete the manual rule and rerun sync, or edit the existing rule's note to this tool's marker if you want this tool to manage it.
+
 ### No Public IP Detected
 
 The tool aborts without changing Cloudflare if IP detection fails.
@@ -322,6 +312,12 @@ cf-ip-access-sync sync --profile work --ipv6
 
 ### LaunchAgent Is Not Running
 
+Test the installed LaunchAgent command:
+
+```bash
+cf-ip-access-sync test-agent --profile work
+```
+
 Inspect launchd:
 
 ```bash
@@ -339,7 +335,7 @@ Reload:
 
 ```bash
 cf-ip-access-sync uninstall-agent --profile work
-cf-ip-access-sync install-agent --profile work --interval 300
+cf-ip-access-sync install-agent --profile work --interval 900
 ```
 
 ### Keychain Token Missing

@@ -8,6 +8,7 @@ from pathlib import Path
 from .cloudflare import CloudflareAPIError, CloudflareClient
 from .config import (
     ConfigError,
+    DEFAULT_INTERVAL_SECONDS,
     ProfileConfig,
     config_path,
     load_profile_config,
@@ -16,9 +17,10 @@ from .config import (
 )
 from .ip_detect import IPDetectionError, detect_public_ip
 from .keychain import KeychainError, resolve_token, store_token
-from .launchd import install_launch_agent, uninstall_launch_agent
+from .launchd import LaunchAgentError, install_launch_agent, plist_path, run_launch_agent_dry_run, uninstall_launch_agent
 from .logging_utils import configure_logging
-from .sync import SyncResult, filter_managed_rules, profile_lock, sync_rules
+from .setup import SetupError, run_setup
+from .sync import SyncResult, filter_matching_rules, filter_managed_rules, profile_lock, sync_rules
 
 
 class CLIError(RuntimeError):
@@ -29,11 +31,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cf-ip-access-sync")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    setup = subparsers.add_parser("setup", help="Interactively configure this tool for first use")
+    setup.add_argument("--profile", help="Profile name to prefill")
+    setup.add_argument("--account-id", help="Cloudflare Account ID to prefill")
+    setup.add_argument("--interval", type=int, help="Sync interval in seconds to prefill")
+    setup.add_argument("--ipv6", action="store_true", help="Preselect IPv6 syncing")
+    setup.add_argument("--no-agent", action="store_true", help="Do not install the LaunchAgent")
+
     configure = subparsers.add_parser("configure", help="Save profile config and optionally store the token in Keychain")
     configure.add_argument("--account-id", required=True)
     configure.add_argument("--profile", default="default")
     configure.add_argument("--token-stdin", action="store_true")
-    configure.add_argument("--interval", type=int, default=300)
+    configure.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS)
     configure.add_argument("--log-level", default="INFO")
     configure.add_argument("--ipv6", action="store_true", help="Enable IPv6 syncing in the saved profile")
 
@@ -49,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--profile", default="default")
     install.add_argument("--interval", type=int)
 
+    test_agent = subparsers.add_parser("test-agent", help="Run the installed LaunchAgent command with --dry-run")
+    test_agent.add_argument("--profile", default="default")
+
     uninstall = subparsers.add_parser("uninstall-agent", help="Unload and remove the LaunchAgent")
     uninstall.add_argument("--profile", default="default")
 
@@ -62,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "setup":
+            return _setup(args)
         if args.command == "configure":
             return _configure(args)
         if args.command == "sync":
@@ -70,14 +84,29 @@ def main(argv: list[str] | None = None) -> int:
             return _status(args)
         if args.command == "install-agent":
             return _install_agent(args)
+        if args.command == "test-agent":
+            return _test_agent(args)
         if args.command == "uninstall-agent":
             return _uninstall_agent(args)
         if args.command == "remove-managed-rule":
             return _remove_managed_rule(args)
-    except (CLIError, ConfigError, CloudflareAPIError, IPDetectionError, KeychainError, OSError) as exc:
+    except (CLIError, ConfigError, CloudflareAPIError, IPDetectionError, KeychainError, OSError, SetupError, LaunchAgentError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 2
+
+
+def _setup(args: argparse.Namespace) -> int:
+    return run_setup(
+        profile=args.profile,
+        account_id=args.account_id,
+        interval=args.interval,
+        ipv6=args.ipv6,
+        no_agent=args.no_agent,
+        status_func=_status_for_profile,
+        dry_run_func=_dry_run_for_profile,
+        install_agent_func=_install_agent_for_profile,
+    )
 
 
 def _configure(args: argparse.Namespace) -> int:
@@ -138,13 +167,17 @@ def _status(args: argparse.Namespace) -> int:
         print("managed_rules: skipped (token missing)")
         return 0
     client = CloudflareClient(token)
-    rules = client.list_access_rules(config.account_id, notes=config.managed_note_marker)
+    rules = client.list_access_rules(config.account_id)
     for family in ("ipv4", "ipv6"):
         managed = filter_managed_rules(rules, config.profile, family)
+        target = "ip6" if family == "ipv6" else "ip"
         if not managed:
             print(f"managed_{family}: none")
+            for rule in filter_matching_rules(rules, target, detected.get(family, "")):
+                if rule not in managed:
+                    note = f" notes={_format_detail_value(rule.notes)}" if rule.notes else ""
+                    print(f"unmanaged_{family}_allow_for_current_ip: id={rule.id} value={rule.value}{note}")
             continue
-        target = "ip6" if family == "ipv6" else "ip"
         for rule in managed:
             matches = rule.mode == "whitelist" and rule.target == target and rule.value == detected.get(family)
             print(f"managed_{family}: id={rule.id} value={rule.value} matches_current={str(matches).lower()}")
@@ -161,6 +194,34 @@ def _install_agent(args: argparse.Namespace) -> int:
     path = install_launch_agent(config.profile, executable, interval)
     print(f"installed profile={config.profile} plist={path} interval={interval}")
     return 0
+
+
+def _test_agent(args: argparse.Namespace) -> int:
+    path = plist_path(args.profile)
+    print(f"plist: {path}")
+    result = run_launch_agent_dry_run(args.profile)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    print(f"exit_code: {result.returncode}")
+    return int(result.returncode)
+
+
+def _status_for_profile(profile: str) -> int:
+    return _status(argparse.Namespace(profile=profile))
+
+
+def _dry_run_for_profile(profile: str) -> int:
+    return _sync(argparse.Namespace(profile=profile, dry_run=True, ipv6=False))
+
+
+def _install_agent_for_profile(profile: str, interval: int) -> Path:
+    config = load_profile_config(profile)
+    config.interval_seconds = interval
+    save_profile_config(config)
+    executable = _console_script_path()
+    return install_launch_agent(config.profile, executable, interval)
 
 
 def _uninstall_agent(args: argparse.Namespace) -> int:
@@ -215,6 +276,10 @@ def _format_result(result: SyncResult, token_source: str | None = None) -> str:
     if token_source:
         parts.append(f"token_source={token_source}")
     return " ".join(parts)
+
+
+def _format_detail_value(value: str) -> str:
+    return "_".join(value.split())
 
 
 def _console_script_path() -> Path:
