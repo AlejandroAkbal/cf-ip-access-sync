@@ -110,12 +110,21 @@ def sync_rules(config: ProfileConfig, client, current_ips: dict[str, str], dry_r
                     current_ip=current_ip,
                     action="dry_run",
                     rule_id=keeper.id,
-                    detail="would_update",
+                    detail="would_recreate",
                 )
             )
         else:
-            updated = client.update_access_rule(config.account_id, keeper.id, target, current_ip, MODE, notes)
-            results.append(SyncResult(family=family, current_ip=current_ip, action="updated", rule_id=updated.id))
+            deleted_id = client.delete_access_rule(config.account_id, keeper.id)
+            created = client.create_access_rule(config.account_id, target, current_ip, MODE, notes)
+            results.append(
+                SyncResult(
+                    family=family,
+                    current_ip=current_ip,
+                    action="recreated",
+                    rule_id=created.id,
+                    detail=f"deleted={deleted_id}",
+                )
+            )
 
         duplicate_rules = [rule for rule in managed_rules if rule.id != keeper.id]
         if config.cleanup_duplicates:

@@ -174,16 +174,18 @@ def test_duplicate_cleanup_deletes_only_exact_marker_duplicates():
     assert [result.action for result in results] == ["unchanged", "duplicate_deleted"]
 
 
-def test_existing_managed_rule_is_patched_when_ip_changes():
+def test_existing_managed_rule_is_recreated_when_ip_changes():
     managed_old = rule("managed", "cf-ip-access-sync profile=work managed=true family=ipv4", value=EXAMPLE_OLD_IP)
     client = FakeCloudflareClient([managed_old])
 
     results = sync_rules(config(), client, {"ipv4": EXAMPLE_CURRENT_IP})
 
-    assert client.updated[0][1:5] == ("managed", "ip", EXAMPLE_CURRENT_IP, "whitelist")
-    assert client.created == []
-    assert client.deleted == []
-    assert results[0].action == "updated"
+    assert client.updated == []
+    assert client.deleted == [("abc123def456", "managed")]
+    assert client.created[0][1:4] == ("ip", EXAMPLE_CURRENT_IP, "whitelist")
+    assert results[0].action == "recreated"
+    assert results[0].rule_id == "created-rule"
+    assert results[0].detail == "deleted=managed"
 
 
 def test_dry_run_makes_no_create_update_or_delete_calls():

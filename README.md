@@ -15,7 +15,7 @@ It intentionally does not use Zero Trust Access, DNS DDNS, or WAF IP Lists.
 ## What You Get
 
 - Account-wide Cloudflare Allow rule for your current laptop IP.
-- Safe updates with `PATCH` when your IP changes.
+- Safe IP changes by recreating the managed rule when your public IP changes.
 - Token storage in macOS Keychain, not in config files.
 - A per-user LaunchAgent for automatic background sync while logged in.
 - Dry-run and status commands before touching Cloudflare.
@@ -211,7 +211,7 @@ cf-ip-access-sync profile=work managed=true family=ipv6
 4. Detects the current public IP with multiple public IP resolvers.
 5. Lists account-level Cloudflare IP Access Rules.
 6. Filters locally by the exact managed note marker.
-7. Creates, updates, leaves unchanged, or safely cleans up duplicate managed rules.
+7. Creates, recreates, leaves unchanged, or safely cleans up duplicate managed rules.
 
 The Cloudflare API base URL is:
 
